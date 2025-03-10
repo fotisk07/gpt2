@@ -67,12 +67,24 @@ class Head(nn.Module):
         return out
 
 
+class MultiHeadAttention(nn.Module):
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+
+    def forward(self, input):
+        # input is (B, T, N_embds)
+        # Each head returns (B,T, head_size / num_heads) if nice
+        # Concat to last dim gives (B, T, head_siz) which works
+        return torch.cat([head(input) for head in self.heads], dim=-1)
+
+
 class GPT2(nn.Module):
     def __init__(self):
         super().__init__()
         self.tok_embds = nn.Embedding(vocab_size, n_embds)
         self.pos_embds = nn.Embedding(context_lenght, n_embds)
-        self.head = Head(head_size=n_embds)
+        self.heads = MultiHeadAttention(num_heads=4, head_size=n_embds // 4)
         self.lm_head = nn.Linear(n_embds, vocab_size)
 
     def forward(self, inputs, targets=None):
@@ -82,7 +94,7 @@ class GPT2(nn.Module):
         position_embdedings = self.pos_embds(torch.arange(T))  # [B, T, Ne]
 
         x = token_embdedings + position_embdedings  # [B, T, Ne]
-        x = self.head(x)  # [B, T, Nembs]
+        x = self.heads(x)  # [B, T, Nembs]
         logits = self.lm_head(x)  # [B, T, VS]
 
         B, T, C = logits.shape
