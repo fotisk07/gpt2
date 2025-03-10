@@ -5,10 +5,11 @@ import torch.nn as nn
 split = 0.9
 batch_size = 32
 context_lenght = 8
-n_embds = 8
-lr = 1e-2
-max_steps = 3000
+n_embds = 32
+lr = 1e-3
+max_steps = 5000
 eval_iters = 200
+eval_interval = 500
 # ---------------------
 
 torch.manual_seed(1337)
@@ -37,11 +38,41 @@ def get_data(split="train"):
     return x, y
 
 
+class Head(nn.Module):
+    """Single Attention Head"""
+
+    def __init__(self, head_size):
+        super().__init__()
+        self.head_size = head_size
+        self.key = nn.Linear(n_embds, head_size, bias=False)
+        self.value = nn.Linear(n_embds, head_size, bias=False)
+        self.query = nn.Linear(n_embds, head_size, bias=False)
+
+        self.register_buffer(
+            "tril", torch.tril(torch.ones((context_lenght, context_lenght)))
+        )
+
+    def forward(self, x):
+        B, T, C = x.shape
+
+        k = self.key(x)  # [B, T, head_size]
+        v = self.value(x)  # [B, T, head_size]
+        q = self.query(x)  # [B, T, head_size]
+
+        wei = q @ k.transpose(-2, -1) * self.head_size**-0.5  # [B, T, T]
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        wei = nn.functional.softmax(wei, dim=-1)
+
+        out = wei @ v
+        return out
+
+
 class GPT2(nn.Module):
     def __init__(self):
         super().__init__()
         self.tok_embds = nn.Embedding(vocab_size, n_embds)
         self.pos_embds = nn.Embedding(context_lenght, n_embds)
+        self.head = Head(head_size=n_embds)
         self.lm_head = nn.Linear(n_embds, vocab_size)
 
     def forward(self, inputs, targets=None):
@@ -50,8 +81,9 @@ class GPT2(nn.Module):
         token_embdedings = self.tok_embds(inputs)  # [B, T, Ne]
         position_embdedings = self.pos_embds(torch.arange(T))  # [B, T, Ne]
 
-        x = token_embdedings + position_embdedings
-        logits = self.lm_head(x)
+        x = token_embdedings + position_embdedings  # [B, T, Ne]
+        x = self.head(x)  # [B, T, Nembs]
+        logits = self.lm_head(x)  # [B, T, VS]
 
         B, T, C = logits.shape
 
@@ -98,7 +130,7 @@ for step in range(max_steps):
     loss.backward()
     optimizer.step()
 
-    if step % 100 == 0:
+    if step % eval_interval == 0:
         loss_dict = estimate_loss()
         print(
             f"Step {step} | Train Loss : {loss_dict['train']:.4f} |"
