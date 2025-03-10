@@ -79,12 +79,50 @@ class MultiHeadAttention(nn.Module):
         return torch.cat([head(input) for head in self.heads], dim=-1)
 
 
+class VectorizedMultiHeadAttention(nn.Module):
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.head_size = head_size
+        self.key = nn.Linear(n_embds, num_heads * head_size, bias=False)
+        self.value = nn.Linear(n_embds, num_heads * head_size, bias=False)
+        self.query = nn.Linear(n_embds, num_heads * head_size, bias=False)
+
+        self.num_heads = num_heads
+        self.head_size = head_size
+        self.register_buffer(
+            "tril", torch.tril(torch.ones((context_lenght, context_lenght)))
+        )
+
+    def forward(self, x):
+        B, T, C = x.shape
+
+        k = self.key(x)  # [B, T, head_size]
+        v = self.value(x)  # [B, T, head_size]
+        q = self.query(x)  # [B, T, head_size]
+
+        k, v, q = (
+            k.view(B, T, self.num_heads, self.head_size).permute(0, 2, 1, 3),
+            v.view(B, T, self.num_heads, self.head_size).permute(0, 2, 1, 3),
+            q.view(B, T, self.num_heads, self.head_size).permute(0, 2, 1, 3),
+        )
+
+        # (B, NH, T, HS) @ (B,NH, HS, T) -> (B,NH,T,T)
+        wei = q @ k.transpose(-2, -1) * self.head_size**-0.5
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        wei = nn.functional.softmax(wei, dim=-1)
+
+        # (B,NH, T, T) @ (B, NH, T, HS) -> (B, NH, T, HS)
+        out = wei @ v
+        out = out.transpose(1, 2).contiguous().view(B, T, C)
+        return out
+
+
 class GPT2(nn.Module):
     def __init__(self):
         super().__init__()
         self.tok_embds = nn.Embedding(vocab_size, n_embds)
         self.pos_embds = nn.Embedding(context_lenght, n_embds)
-        self.heads = MultiHeadAttention(num_heads=4, head_size=n_embds // 4)
+        self.heads = VectorizedMultiHeadAttention(num_heads=4, head_size=n_embds // 4)
         self.lm_head = nn.Linear(n_embds, vocab_size)
 
     def forward(self, inputs, targets=None):
