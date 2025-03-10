@@ -5,6 +5,7 @@ import torch.nn as nn
 split = 0.9
 batch_size = 32
 context_lenght = 8
+n_embds = 8
 lr = 1e-2
 max_steps = 3000
 eval_iters = 200
@@ -36,14 +37,21 @@ def get_data(split="train"):
     return x, y
 
 
-class BigramModel(nn.Module):
-    def __init__(self, vocab_size):
+class GPT2(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.embds = nn.Embedding(vocab_size, vocab_size)
+        self.tok_embds = nn.Embedding(vocab_size, n_embds)
+        self.pos_embds = nn.Embedding(context_lenght, n_embds)
+        self.lm_head = nn.Linear(n_embds, vocab_size)
 
     def forward(self, inputs, targets=None):
         # inputs [B, T], targets [B, T]
-        logits = self.embds(inputs)  # [B, T, VS]
+        B, T = inputs.shape
+        token_embdedings = self.tok_embds(inputs)  # [B, T, Ne]
+        position_embdedings = self.pos_embds(torch.arange(T))  # [B, T, Ne]
+
+        x = token_embdedings + position_embdedings
+        logits = self.lm_head(x)
 
         B, T, C = logits.shape
 
@@ -58,7 +66,7 @@ class BigramModel(nn.Module):
         # idx is [B, T]
         B, T = idx.shape
         for _ in range(max_new_tokens):
-            logits, _ = self(idx)  # [B, T, C]
+            logits, _ = self(idx[:, -context_lenght:])  # [B, T, C]
             probabs = nn.functional.softmax(logits, dim=-1)
             prediction = probabs[:, -1]  # only last T
             next_token = torch.multinomial(prediction, B)
@@ -80,7 +88,7 @@ def estimate_loss():
 
 
 ######### Train Loop ############
-model = BigramModel(vocab_size=vocab_size)
+model = GPT2()
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 for step in range(max_steps):
     x, y = get_data()
@@ -96,7 +104,6 @@ for step in range(max_steps):
             f"Step {step} | Train Loss : {loss_dict['train']:.4f} |"
             f"Val Loss : {loss_dict['val']:.4f}"
         )
-
 
 context = torch.zeros((1, 1), dtype=torch.long)
 print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
