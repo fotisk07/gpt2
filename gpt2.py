@@ -15,6 +15,7 @@ eval_interval = 500
 # ---------------------
 
 torch.manual_seed(1337)
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 with open("input.txt") as file:
     data = file.read()
@@ -208,10 +209,12 @@ def estimate_loss():
 
 
 ######### Train Loop ############
-model = GPT2()
+model = GPT2().to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+print("Using ", device)
 for step in range(max_steps):
     x, y = get_data()
+    x, y = x.to(device), y.to(device)
     logits, loss = model(x, y)
 
     optimizer.zero_grad()
