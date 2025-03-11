@@ -167,7 +167,7 @@ class GPT2(nn.Module):
         # inputs [B, T], targets [B, T]
         B, T = inputs.shape
         token_embdedings = self.tok_embds(inputs)  # [B, T, Ne]
-        position_embdedings = self.pos_embds(torch.arange(T))  # [B, T, Ne]
+        position_embdedings = self.pos_embds(torch.arange(T, device=device))  # [B, T, Ne]
 
         x = token_embdedings + position_embdedings  # [B, T, Ne]
         x = self.blocks(x)  # [B, T, Nembs]
@@ -202,6 +202,7 @@ def estimate_loss():
         losses = torch.zeros(eval_iters)
         for i in range(eval_iters):
             x, y = get_data(split)
+            x,y = x.to(device), y.to(device)
             _, loss = model(x, y)
             losses[i] = loss
         loss_dict[split] = loss.mean()
