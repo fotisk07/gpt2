@@ -3,9 +3,11 @@ import torch.nn as nn
 
 # hyperparams
 split = 0.9
-batch_size = 32
-context_lenght = 8
-n_embds = 32
+batch_size = 64
+context_lenght = 256
+n_embds = 384
+n_heads = 6
+n_layers = 6
 lr = 1e-3
 max_steps = 5000
 eval_iters = 200
@@ -71,12 +73,15 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embds, n_embds)
 
     def forward(self, input):
         # input is (B, T, N_embds)
         # Each head returns (B,T, head_size / num_heads) if nice
         # Concat to last dim gives (B, T, head_siz) which works
-        return torch.cat([head(input) for head in self.heads], dim=-1)
+        x = torch.cat([head(input) for head in self.heads], dim=-1)
+        x = self.proj(x)
+        return x
 
 
 class VectorizedMultiHeadAttention(nn.Module):
@@ -92,6 +97,7 @@ class VectorizedMultiHeadAttention(nn.Module):
         self.register_buffer(
             "tril", torch.tril(torch.ones((context_lenght, context_lenght)))
         )
+        self.proj = nn.Linear(n_embds, n_embds)
 
     def forward(self, x):
         B, T, C = x.shape
@@ -114,7 +120,37 @@ class VectorizedMultiHeadAttention(nn.Module):
         # (B,NH, T, T) @ (B, NH, T, HS) -> (B, NH, T, HS)
         out = wei @ v
         out = out.transpose(1, 2).contiguous().view(B, T, C)
-        return out
+
+        return self.proj(out)
+
+
+class FeedForward(nn.Module):
+    def __init__(self, n_embds):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(n_embds, 4 * n_embds),
+            nn.ReLU(),
+            nn.Linear(4 * n_embds, n_embds),
+        )
+
+    def forward(self, input):
+        return self.layers(input)
+
+
+class Block(nn.Module):
+    def __init__(self, num_embds, num_heads):
+        super().__init__()
+        head_size = num_embds // num_heads
+        self.mha = MultiHeadAttention(num_heads=num_heads, head_size=head_size)
+        self.ffw = FeedForward(n_embds)
+        self.ln1 = nn.LayerNorm(n_embds)
+        self.ln2 = nn.LayerNorm(n_embds)
+
+    def forward(self, x):
+        # x [B, T, Ne]
+        x = x + self.mha(self.ln1(x))  # x [B, T, Ne]
+        x = x + self.ffw(self.ln2(x))  # x [B, T, Ne]
+        return x
 
 
 class GPT2(nn.Module):
@@ -122,7 +158,8 @@ class GPT2(nn.Module):
         super().__init__()
         self.tok_embds = nn.Embedding(vocab_size, n_embds)
         self.pos_embds = nn.Embedding(context_lenght, n_embds)
-        self.heads = VectorizedMultiHeadAttention(num_heads=4, head_size=n_embds // 4)
+        self.blocks = nn.Sequential(*[Block(n_embds, n_heads) for _ in range(n_layers)])
+        self.ln_f = nn.LayerNorm(n_embds)
         self.lm_head = nn.Linear(n_embds, vocab_size)
 
     def forward(self, inputs, targets=None):
@@ -132,7 +169,8 @@ class GPT2(nn.Module):
         position_embdedings = self.pos_embds(torch.arange(T))  # [B, T, Ne]
 
         x = token_embdedings + position_embdedings  # [B, T, Ne]
-        x = self.heads(x)  # [B, T, Nembs]
+        x = self.blocks(x)  # [B, T, Nembs]
+        x = self.ln_f(x)  # [B, T, Nembs]
         logits = self.lm_head(x)  # [B, T, VS]
 
         B, T, C = logits.shape
