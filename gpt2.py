@@ -10,7 +10,7 @@ n_heads = 6
 n_layers = 6
 lr = 1e-3
 max_steps = 5000
-eval_iters = 200
+eval_iters = 100
 eval_interval = 500
 # ---------------------
 
@@ -124,6 +124,38 @@ class VectorizedMultiHeadAttention(nn.Module):
 
         return self.proj(out)
 
+class CausalSelfAttention(nn.Module):
+    def __init__(self,  num_heads, head_size):
+        super().__init__()
+
+        self.c_attn = nn.Linear(n_embds, head_size * num_heads*3)
+        self.proj = nn.Linear(n_embds, n_embds)
+        self.register_buffer(
+            "tril", torch.tril(torch.ones((context_lenght, context_lenght)))
+        )
+        self.head_size = head_size
+        self.num_heads = num_heads
+    
+    def forward(self, x):
+        B, T, C = x.size()
+
+        q,k,v = self.c_attn(x).split(self.head_size * self.num_heads, dim=2)
+
+        k, v, q = (
+            k.view(B, T, self.num_heads, self.head_size).permute(0, 2, 1, 3),
+            v.view(B, T, self.num_heads, self.head_size).permute(0, 2, 1, 3),
+            q.view(B, T, self.num_heads, self.head_size).permute(0, 2, 1, 3),
+        )
+        # (B, NH, T, HS) @ (B,NH, HS, T) -> (B,NH,T,T)
+        wei = q @ k.transpose(-2, -1) * self.head_size**-0.5
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        wei = nn.functional.softmax(wei, dim=-1)
+
+        # (B,NH, T, T) @ (B, NH, T, HS) -> (B, NH, T, HS)
+        out = wei @ v
+        out = out.transpose(1, 2).contiguous().view(B, T, C)
+
+        return self.proj(out)
 
 class FeedForward(nn.Module):
     def __init__(self, n_embds):
@@ -142,7 +174,7 @@ class Block(nn.Module):
     def __init__(self, num_embds, num_heads):
         super().__init__()
         head_size = num_embds // num_heads
-        self.mha = MultiHeadAttention(num_heads=num_heads, head_size=head_size)
+        self.mha = CausalSelfAttention(num_heads=num_heads, head_size=head_size)
         self.ffw = FeedForward(n_embds)
         self.ln1 = nn.LayerNorm(n_embds)
         self.ln2 = nn.LayerNorm(n_embds)
