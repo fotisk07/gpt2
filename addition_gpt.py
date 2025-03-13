@@ -2,15 +2,15 @@
 Proof of concept code for creating a transformer that learns how to add.
 Works well for 2,3,4 digits numbers, haven't tested for more.
 A lot of things can be improved
-- Simpler (better ?) encoding, no + no = just give the numbers of predifined size
-- Implement train/test split
-- Refactor code to be more project like
+- Simpler (better ?) encoding, no + no = just give the numbers of predifined size : TODO
+- Implement train/test split : TODO
+- Refactor code to be more project like : DONE
 - Check out karpathy config implementation
 -
 """
 
 import torch
-import torch.nn as nn
+from model import GPT2
 
 # hyperparams
 num_digits = 4
@@ -39,7 +39,7 @@ encode = lambda text: [c2i[letter] for letter in text]
 decode = lambda tokens: "".join(i2c[token] for token in tokens)
 
 
-def get_data_vol2():
+def get_data():
     # example for 1+1
     # x : [1, 10, 1, 11, 1, 0,0 ,..]
     # y : [-1, -1, -1, 1, 0, 0, 0, ...]
@@ -63,132 +63,13 @@ def get_data_vol2():
     return x.to(device), y.to(device)
 
 
-class CausalSelfAttention(nn.Module):
-    def __init__(self, n_embds, num_heads, context_lenght):
-        super().__init__()
-
-        head_size = n_embds // num_heads
-        self.c_attn = nn.Linear(n_embds, head_size * num_heads * 3)
-        self.proj = nn.Linear(n_embds, n_embds)
-        self.register_buffer(
-            "tril", torch.tril(torch.ones((context_lenght, context_lenght)))
-        )
-        self.head_size = head_size
-        self.num_heads = num_heads
-
-    def forward(self, x):
-        B, T, C = x.size()
-
-        q, k, v = self.c_attn(x).split(self.head_size * self.num_heads, dim=2)
-
-        k, v, q = (
-            k.view(B, T, self.num_heads, self.head_size).permute(0, 2, 1, 3),
-            v.view(B, T, self.num_heads, self.head_size).permute(0, 2, 1, 3),
-            q.view(B, T, self.num_heads, self.head_size).permute(0, 2, 1, 3),
-        )
-        # (B, NH, T, HS) @ (B,NH, HS, T) -> (B,NH,T,T)
-        wei = q @ k.transpose(-2, -1) * self.head_size**-0.5
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
-        wei = nn.functional.softmax(wei, dim=-1)
-
-        # (B,NH, T, T) @ (B, NH, T, HS) -> (B, NH, T, HS)
-        out = wei @ v
-        out = out.transpose(1, 2).contiguous().view(B, T, C)
-
-        return self.proj(out)
-
-
-class FeedForward(nn.Module):
-    def __init__(self, n_embds):
-        super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(n_embds, 4 * n_embds),
-            nn.ReLU(),
-            nn.Linear(4 * n_embds, n_embds),
-        )
-
-    def forward(self, input):
-        return self.layers(input)
-
-
-class Block(nn.Module):
-    def __init__(self, num_embds, num_heads):
-        super().__init__()
-        self.mha = CausalSelfAttention(
-            n_embds=n_embds, num_heads=num_heads, context_lenght=context_lengt
-        )
-        self.ffw = FeedForward(n_embds)
-        self.ln1 = nn.LayerNorm(n_embds)
-        self.ln2 = nn.LayerNorm(n_embds)
-
-    def forward(self, x):
-        # x [B, T, Ne]
-        x = x + self.mha(self.ln1(x))  # x [B, T, Ne]
-        x = x + self.ffw(self.ln2(x))  # x [B, T, Ne]
-        return x
-
-
-class GPT2(nn.Module):
-    def __init__(self, vocab_size, context_lenght, n_embds, n_layers, num_heads):
-        super().__init__()
-        self.tok_embds = nn.Embedding(vocab_size, n_embds)
-        self.pos_embds = nn.Embedding(context_lenght, n_embds)
-        self.blocks = nn.Sequential(
-            *[Block(num_embds=n_embds, num_heads=num_heads) for _ in range(n_layers)]
-        )
-        self.ln_f = nn.LayerNorm(n_embds)
-        self.lm_head = nn.Linear(n_embds, vocab_size)
-
-        self.context_lenght = context_lenght
-
-    def forward(self, inputs, targets=None):
-        # inputs [B, T], targets [B, T]
-        B, T = inputs.shape
-        token_embdedings = self.tok_embds(inputs)  # [B, T, Ne]
-        position_embdedings = self.pos_embds(
-            torch.arange(T, device=device)
-        )  # [B, T, Ne]
-
-        x = token_embdedings + position_embdedings  # [B, T, Ne]
-        x = self.blocks(x)  # [B, T, Nembs]
-        x = self.ln_f(x)  # [B, T, Nembs]
-        logits = self.lm_head(x)  # [B, T, VS]
-
-        B, T, C = logits.shape
-
-        if targets is None:
-            loss = None
-        else:
-            loss = nn.functional.cross_entropy(
-                logits.view(-1, C), targets.reshape(-1), ignore_index=-1
-            )
-
-        return logits, loss
-
-    def generate(self, idx, max_new_tokens):
-        # idx is [B, T]
-        B, T = idx.shape
-        for _ in range(max_new_tokens):
-            logits, _ = self(idx[:, -context_lengt:])  # [B, T, C]
-            probabs = nn.functional.softmax(logits, dim=-1)  # [B, T, C]
-            prediction = probabs[
-                :, -1, :
-            ]  # Get the last token prediction for each batch
-            next_token = torch.multinomial(prediction, 1)  # Sample 1 token per batch
-            next_token = next_token.squeeze(1)  # Remove the extra dimension, shape [B]
-            idx = torch.cat(
-                (idx, next_token.unsqueeze(1)), dim=-1
-            )  # Add the new token to idx
-        return idx
-
-
 @torch.no_grad()
 def estimate_loss():
     loss_total = 0
     losses = torch.zeros(eval_iters)
     for i in range(eval_iters):
-        x, y = get_data_vol2()
-        _, loss = model(x, y)
+        x, y = get_data()
+        _, loss = m(x, y)
         losses[i] = loss
     loss_total = loss.mean()
     return loss_total
@@ -204,20 +85,22 @@ def show_outputs():
         a, b = to_add[0], to_add[1]
         question = torch.tensor(encode(f"{a.item()}+{b.item()}="))
         predicted_res = decode(
-            model.generate(question.unsqueeze(0), max_new_tokens=5)[0].tolist()
+            m.generate(question.unsqueeze(0), max_new_tokens=5)[0].tolist()
         )[len(question) :][::-1]
         print(f"{a.item()}+{b.item()}={predicted_res} ||| Answer :  {c.item()}")
     print("-------------------")
 
 
 if __name__ == "__main__":
-    model = GPT2(vocab_size, context_lengt, n_embds, n_layers, num_heads).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    m = GPT2(vocab_size, context_lengt, n_embds, n_layers, num_heads, device=device).to(
+        device
+    )
+    optimizer = torch.optim.Adam(m.parameters(), lr=lr)
     print("Using ", device)
     for step in range(max_steps):
-        x, y = get_data_vol2()
+        x, y = get_data()
         x, y = x.to(device), y.to(device)
-        logits, loss = model(x, y)
+        logits, loss = m(x, y)
 
         optimizer.zero_grad()
         loss.backward()
@@ -227,5 +110,3 @@ if __name__ == "__main__":
             total_loss = estimate_loss()
             print(f"Step {step} | Loss : {total_loss:.4f} |")
             show_outputs()
-
-    torch.save(model.state_dict(), "mymodel.pt")
