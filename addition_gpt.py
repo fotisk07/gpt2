@@ -1,19 +1,30 @@
+"""
+Proof of concept code for creating a transformer that learns how to add.
+Works well for 2,3,4 digits numbers, haven't tested for more.
+A lot of things can be improved
+- Simpler (better ?) encoding, no + no = just give the numbers of predifined size
+- Implement train/test split
+- Refactor code to be more project like
+- Check out karpathy config implementation
+-
+"""
+
 import torch
 import torch.nn as nn
 
 # hyperparams
-num_digits = 10
-context_lengt = num_digits * 3 + 2
-n_embds = 64
+num_digits = 4
+context_lengt = num_digits * 3 + 3
+n_embds = 128
 num_heads = 8
-n_layers = 2
+n_layers = 3
 
 lr = 1e-3
 batch_size = 64
 max_steps = 5000
-eval_interval = 1000
+eval_interval = 500
 eval_iters = 100
-output_size = 4
+output_size = 5
 
 # ---------------------
 
@@ -28,10 +39,10 @@ encode = lambda text: [c2i[letter] for letter in text]
 decode = lambda tokens: "".join(i2c[token] for token in tokens)
 
 
-def get_data():
+def get_data_vol2():
     # example for 1+1
-    # x : [1, 10, 1, 11, 0]
-    # y : [-1, -1, -1, 0, 1]
+    # x : [1, 10, 1, 11, 1, 0,0 ,..]
+    # y : [-1, -1, -1, 1, 0, 0, 0, ...]
     # context leght : 3* n_dig + 2
 
     source = torch.randint(0, 10**num_digits, (batch_size, 2))
@@ -39,13 +50,15 @@ def get_data():
 
     x = torch.zeros(batch_size, context_lengt, dtype=torch.long)
     y = torch.zeros(batch_size, context_lengt, dtype=torch.long)
-    y[:, : 2 * num_digits + 1] = -1  # mask the equation part
     for i, (to_add, c) in enumerate(zip(source, res)):
         a, b = to_add[0], to_add[1]
-        equation = encode(f"{a.item():0{num_digits}}+{b.item():0{num_digits}}=")
-        result = encode(f"{c.item():0{num_digits+1}}"[::-1])
-        x[i] = torch.tensor(equation + result, dtype=torch.long)[:-1]
-        y[i, 2 * num_digits + 1 :] = torch.tensor(result, dtype=torch.long)
+        question = encode(f"{a.item()}+{b.item()}=")
+        answer = encode(f"{c.item()}"[::-1])
+        equation = question + answer
+        padding = (context_lengt + 1 - len(equation)) * [0]
+        x[i] = torch.tensor(equation + padding, dtype=torch.long)[:-1]
+        y[i, : len(question) - 1] = -1
+        y[i, len(question) - 1 :] = torch.tensor(answer + padding, dtype=torch.long)
 
     return x.to(device), y.to(device)
 
@@ -174,7 +187,7 @@ def estimate_loss():
     loss_total = 0
     losses = torch.zeros(eval_iters)
     for i in range(eval_iters):
-        x, y = get_data()
+        x, y = get_data_vol2()
         _, loss = model(x, y)
         losses[i] = loss
     loss_total = loss.mean()
@@ -182,18 +195,19 @@ def estimate_loss():
 
 
 @torch.no_grad()
-def show_outputs(output_size):
-    x, _ = get_data()
-    results = model.generate(x[:output_size, :-2], max_new_tokens=3)
-
-    print("---- Examples --------")
-    for res in results:
-        output = (
-            decode(res[: -num_digits - 1].tolist())
-            + decode(res[-num_digits - 1 :].tolist())[::-1]
-        )
-        print(output)
-    print("----------------------")
+def show_outputs():
+    # Generate some data
+    source = torch.randint(0, 10**num_digits, (output_size, 2))
+    res = source.sum(dim=1)
+    print("-----Examples-------")
+    for i, (to_add, c) in enumerate(zip(source, res)):
+        a, b = to_add[0], to_add[1]
+        question = torch.tensor(encode(f"{a.item()}+{b.item()}="))
+        predicted_res = decode(
+            model.generate(question.unsqueeze(0), max_new_tokens=5)[0].tolist()
+        )[len(question) :][::-1]
+        print(f"{a.item()}+{b.item()}={predicted_res} ||| Answer :  {c.item()}")
+    print("-------------------")
 
 
 if __name__ == "__main__":
@@ -201,7 +215,7 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     print("Using ", device)
     for step in range(max_steps):
-        x, y = get_data()
+        x, y = get_data_vol2()
         x, y = x.to(device), y.to(device)
         logits, loss = model(x, y)
 
@@ -212,13 +226,6 @@ if __name__ == "__main__":
         if step % eval_interval == 0:
             total_loss = estimate_loss()
             print(f"Step {step} | Loss : {total_loss:.4f} |")
-            show_outputs(output_size)
+            show_outputs()
 
-    torch.save(model.state_dict(), "model.pt")
-# print(
-#     decode(
-#         model.generate(torch.tensor(encode("10+10=")).unsqueeze(0), max_new_tokens=3)[
-#             0
-#         ].tolist()
-#     )
-# )
+    torch.save(model.state_dict(), "mymodel.pt")
