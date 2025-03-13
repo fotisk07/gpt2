@@ -124,22 +124,23 @@ class VectorizedMultiHeadAttention(nn.Module):
 
         return self.proj(out)
 
+
 class CausalSelfAttention(nn.Module):
-    def __init__(self,  num_heads, head_size):
+    def __init__(self, num_heads, head_size):
         super().__init__()
 
-        self.c_attn = nn.Linear(n_embds, head_size * num_heads*3)
+        self.c_attn = nn.Linear(n_embds, head_size * num_heads * 3)
         self.proj = nn.Linear(n_embds, n_embds)
         self.register_buffer(
             "tril", torch.tril(torch.ones((context_lenght, context_lenght)))
         )
         self.head_size = head_size
         self.num_heads = num_heads
-    
+
     def forward(self, x):
         B, T, C = x.size()
 
-        q,k,v = self.c_attn(x).split(self.head_size * self.num_heads, dim=2)
+        q, k, v = self.c_attn(x).split(self.head_size * self.num_heads, dim=2)
 
         k, v, q = (
             k.view(B, T, self.num_heads, self.head_size).permute(0, 2, 1, 3),
@@ -156,6 +157,7 @@ class CausalSelfAttention(nn.Module):
         out = out.transpose(1, 2).contiguous().view(B, T, C)
 
         return self.proj(out)
+
 
 class FeedForward(nn.Module):
     def __init__(self, n_embds):
@@ -199,7 +201,9 @@ class GPT2(nn.Module):
         # inputs [B, T], targets [B, T]
         B, T = inputs.shape
         token_embdedings = self.tok_embds(inputs)  # [B, T, Ne]
-        position_embdedings = self.pos_embds(torch.arange(T, device=device))  # [B, T, Ne]
+        position_embdedings = self.pos_embds(
+            torch.arange(T, device=device)
+        )  # [B, T, Ne]
 
         x = token_embdedings + position_embdedings  # [B, T, Ne]
         x = self.blocks(x)  # [B, T, Nembs]
@@ -234,7 +238,7 @@ def estimate_loss():
         losses = torch.zeros(eval_iters)
         for i in range(eval_iters):
             x, y = get_data(split)
-            x,y = x.to(device), y.to(device)
+            x, y = x.to(device), y.to(device)
             _, loss = model(x, y)
             losses[i] = loss
         loss_dict[split] = loss.mean()
