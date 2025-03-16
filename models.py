@@ -157,33 +157,3 @@ class GPT2(nn.Module):
                 (idx, next_token.unsqueeze(1)), dim=-1
             )  # Add the new token to idx
         return idx
-
-
-@torch.no_grad()
-def estimate_loss(model, get_data, eval_iters):
-    loss_dict = dict()
-    for split in ["train", "val"]:
-        losses = torch.zeros(eval_iters)
-        for i in range(eval_iters):
-            x, y = get_data(split)
-            _, loss = model(x, y)
-            losses[i] = loss
-        loss_dict[split] = loss.mean()
-    return loss_dict
-
-
-def train(model, optimizer, get_data, max_steps, eval_interval, eval_iters):
-    for step in range(max_steps):
-        x, y = get_data()
-        logits, loss = model(x, y)
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        if step % eval_interval == 0:
-            loss_dict = estimate_loss(model, get_data, eval_iters)
-            print(
-                f"Step {step} | Train Loss : {loss_dict['train']:.4f} |"
-                f"Val Loss : {loss_dict['val']:.4f}"
-            )
